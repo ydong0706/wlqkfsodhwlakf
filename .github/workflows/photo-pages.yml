@@ -28,6 +28,7 @@ jobs:
           from html import escape
           from urllib.parse import quote
           import json
+          import shutil
           from PIL import Image, ImageOps
 
           output = Path('_site')
@@ -37,8 +38,12 @@ jobs:
           sources = list(Path('.').glob('*'))
           if Path('originals').exists():
               sources += list(Path('originals').rglob('*'))
-          sources = sorted(p for p in sources if p.is_file()
-                           and p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'})
+          sources += list(Path('.github/workflows').glob('*'))
+          sources = sorted((p for p in sources if p.is_file()
+                           and p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}),
+                           key=lambda p: p.stem.lower())
+          if len(sources) > 256:
+              raise ValueError('World supports up to 256 photos')
           names = set()
           entries = []
           for source in sources:
@@ -57,11 +62,13 @@ jobs:
                   resized.save(target, 'JPEG', quality=90, optimize=True)
               with Image.open(target) as check:
                   assert check.size == (1024, 512)
+              shutil.copyfile(target, photos / ('slot-%03d.jpg' % len(entries)))
               entries.append({'file': name, 'path': 'photos/' + name,
                               'width': 1024, 'height': 512})
               print(str(source) + ' -> ' + str(target))
           (output / 'manifest.json').write_text(
               json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8')
+          (output / 'count.txt').write_text(str(len(entries)), encoding='utf-8')
           links = ''.join('<li><a href="photos/' + quote(e['file'], safe='')
                           + '">' + escape(e['file']) + '</a></li>' for e in entries)
           (output / 'index.html').write_text(
