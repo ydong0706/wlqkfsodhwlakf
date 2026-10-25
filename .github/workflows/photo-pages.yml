@@ -1,0 +1,88 @@
+name: Resize photos and deploy Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: photo-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'Pillow>=11,<13'
+      - name: Resize originals to 1024 x 512
+        shell: python
+        run: |
+          from pathlib import Path
+          from html import escape
+          from urllib.parse import quote
+          import json
+          from PIL import Image, ImageOps
+
+          output = Path('_site')
+          photos = output / 'photos'
+          photos.mkdir(parents=True, exist_ok=True)
+          # Upload originals into originals/. Root-level images also work.
+          sources = list(Path('.').glob('*'))
+          if Path('originals').exists():
+              sources += list(Path('originals').rglob('*'))
+          sources = sorted(p for p in sources if p.is_file()
+                           and p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'})
+          names = set()
+          entries = []
+          for source in sources:
+              name = source.stem + '.jpg'
+              if name.lower() in names:
+                  raise ValueError('Duplicate photo name: ' + name)
+              names.add(name.lower())
+              with Image.open(source) as original:
+                  oriented = ImageOps.exif_transpose(original)
+                  rgba = oriented.convert('RGBA')
+                  background = Image.new('RGBA', rgba.size, (0, 0, 0, 255))
+                  background.alpha_composite(rgba)
+                  resized = background.convert('RGB').resize(
+                      (1024, 512), Image.Resampling.LANCZOS)
+                  target = photos / name
+                  resized.save(target, 'JPEG', quality=90, optimize=True)
+              with Image.open(target) as check:
+                  assert check.size == (1024, 512)
+              entries.append({'file': name, 'path': 'photos/' + name,
+                              'width': 1024, 'height': 512})
+              print(str(source) + ' -> ' + str(target))
+          (output / 'manifest.json').write_text(
+              json.dumps(entries, ensure_ascii=False, indent=2), encoding='utf-8')
+          links = ''.join('<li><a href="photos/' + quote(e['file'], safe='')
+                          + '">' + escape(e['file']) + '</a></li>' for e in entries)
+          (output / 'index.html').write_text(
+              '<!doctype html><meta charset="utf-8"><title>leVerAge Photos</title>'
+              '<h1>leVerAge Photos</h1><p>1024 x 512</p><ul>' + links + '</ul>',
+              encoding='utf-8')
+          (output / '.nojekyll').touch()
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
